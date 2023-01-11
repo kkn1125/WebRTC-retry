@@ -1,0 +1,17 @@
+{
+  "name": "front",
+  "version": "1.0.0",
+  "main": "vite.config.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development vite --config vite.config.js"
+  },
+  "dependencies": {
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.0.3",
+    "vite": "^4.0.4"
+  }
+}
