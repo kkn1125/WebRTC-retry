@@ -1,89 +1,185 @@
-const ws = new WebSocket("ws://localhost:3000");
-ws.onopen = () => {
+const app = document.querySelector("#app");
+// const video = document.createElement("video");
+// video.autoplay = true;
+// app.appendChild(video);
+
+let dataChannel = null;
+let localVideo = document.createElement("video");
+app.appendChild(localVideo);
+localVideo.autoplay = true;
+localVideo.controls = true;
+let localStream = null;
+// const videos = new Map();
+
+const PC_CONFIG = {
+  iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302",
+    },
+  ],
+};
+
+const peers = new Map();
+const pendingCandidates = {};
+let mysid = null;
+
+getUserMedia();
+const socket = new WebSocket("ws://localhost:3000");
+socket.onopen = () => {
   console.log("socket open");
 };
-ws.onmessage = (message) => {
-  console.log(message);
-};
-ws.onerror = () => {
-  console.log("socket error");
-};
-ws.onclosen = () => {
-  console.log("socket close");
-};
-const app = document.querySelector("#app");
-const video = document.createElement("video");
-video.autoplay = true;
-app.appendChild(video);
-let localStream = null;
-let pc = new RTCPeerConnection({
-  iceServers: [
-    { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
-  ],
-});
-
-pc.onicecandidate = function (e) {
-  console.log("onicecandidate", e);
-  if (e.candidate) {
-    socket.send({
-      type: "candidate",
-      candidate: e.candidate,
+socket.onmessage = async (message) => {
+  const json = JSON.parse(message.data);
+  const sid = json.sid;
+  delete json.sid;
+  if (json.type === "ready") {
+    mysid = sid;
+    peers.set(sid, createPeerConnection());
+    localVideo.srcObject = localStream;
+    localStream.getTracks().forEach((track) => {
+      /** @type {RTCPeerConnection} */ (peers.get(sid)).addTrack(
+        track,
+        localStream
+      );
     });
+    dataChannel = /** @type {RTCPeerConnection} */ (
+      peers.get(sid)
+    ).createDataChannel("chat");
+    // console.log(dataChannel);
+    dataChannel.onopen = (e) => {
+      console.log("datachannel open!");
+    };
+    dataChannel.onmessage = (e) => {
+      console.log("onmessage", e);
+    };
+    dataChannel.onerror = (e) => {
+      console.log("onerror", e);
+    };
+    dataChannel.onclose = (e) => {
+      console.log("onclose", e);
+    };
+    /** @type {RTCPeerConnection} */ (peers.get(sid))
+      .createOffer()
+      .then((offer) => setLocalDescription(sid, offer))
+      .then(() => sendLocalDescription(sid))
+      .then(() => {})
+      .catch((err) => {
+        console.log("answer error", err);
+      });
+  } else if (json.type === "offer") {
+    peers.get(sid).setRemoteDescription(new RTCSessionDescription(json));
+    /** @type {RTCPeerConnection} */ (peers.get(sid))
+      .createAnswer()
+      .then((answer) => setLocalDescription(sid, answer))
+      .then(() => sendLocalDescription(sid))
+      .then(() => {})
+      .catch((err) => {
+        console.log("answer error", err);
+      });
+    addPendingCandidates(sid);
+  } else if (json.type === "answer") {
+    try {
+      const state = peers.get(sid).signalingState;
+      console.log(state, json);
+      peers
+        .get(sid)
+        .setRemoteDescription(new RTCSessionDescription(json))
+        .catch((e) => console.log(e));
+    } catch (e) {
+      console.log(e);
+    }
+  } else if (json.type === "candidate") {
+    peers.get(sid).addIceCandidate(json.candidate);
   }
 };
-
-pc.ontrack = function (e) {
-  console.log("ontrack", e);
-  remoteVideo.current.srcObject = remoteStream = e.streams[0];
+socket.onerror = (err) => {
+  console.log("socket error", err);
+};
+socket.onclose = () => {
+  console.log("socket close");
 };
 
-pc.ondatachannel = function (e) {
-  dataChannel = e.channel;
-  console.log(localStream.getVideoTracks());
-  handleData();
-  sendData({
-    peerMediaStream: {
-      video: localStream.getVideoTracks()[0].enabled,
-    },
-  });
-};
-
-let others = [];
-
-function makeVideo() {
-  const vd = document.createElement("video");
-  vd.autoplay = true;
-  app.appendChild(vd);
-}
-// function createVideo() {
-//   new RTCPeerConnection({
-
-// 	});
-// }
-
-window.addEventListener("load", () => {
-  window.navigator.mediaDevices
+function getUserMedia(sid) {
+  return navigator.mediaDevices
     .getUserMedia({
       video: true,
-      audio: false,
+      audio: true,
     })
     .then((stream) => {
-      console.log(stream);
-      window.stream = stream;
-      video.srcObject = stream;
-
-      makeConnection(stream);
-    })
-    .catch((e) => {
-      console.log("getUserMedia error", e);
+      localStream = stream;
     });
-});
-
-function makeConnection(/** @type {MediaStream} */ stream) {
-  stream.getTracks().forEAch((track) => pc.addTrack(track, stream));
+}
+function createPeerConnection() {
+  const pc = new RTCPeerConnection(PC_CONFIG);
+  pc.onicecandidate = onIcecandidate;
+  pc.ondatachannel = onDatachannel;
+  pc.ontrack = onTrack;
+  pc.onconnectionstatechange = (e) => {
+    console.log("peer connection change", e);
+  };
+  return pc;
 }
 
-function handleIc(data) {
-  console.log("ice cadidate");
-  console.log(data);
+function setLocalDescription(sid, session) {
+  return /** @type {RTCPeerConnection} */ (peers.get(sid)).setLocalDescription(
+    new RTCSessionDescription(session)
+  );
+}
+function sendLocalDescription(sid) {
+  const session = /** @type {RTCPeerConnection} */ (peers.get(sid))
+    .localDescription;
+  sendData({
+    sid: sid,
+    type: session.type,
+    sdp: session.sdp,
+  });
+}
+
+function onIcecandidate(e) {
+  // console.log('onicecandidate')
+  if (e.candidate) {
+    socket.send(
+      JSON.stringify({
+        sid: mysid,
+        type: "candidate",
+        candidate: e.candidate,
+      })
+    );
+  }
+}
+function onDatachannel(e) {
+  console.log("ondatachannel!");
+  dataChannel = e.channel;
+  // console.log(localStream.getVideoTracks());
+  dataChannel.send(
+    JSON.stringify({
+      peerMediaStream: {
+        video: localStream.getVideoTracks()[0].enabled,
+      },
+    })
+  );
+}
+function onTrack(e) {
+  console.log("on track!!", e);
+  if (e.track.kind === "video") {
+    let remoteVideo = document.createElement("video");
+    remoteVideo.controls = true;
+    remoteVideo.autoplay = true;
+    app.appendChild(remoteVideo);
+    // streams가 비어있을 경우 초기 getUserMedia에서 addTrack시 2번째 인자로 localStream을 주어야 한다.
+    remoteVideo.srcObject = e.streams[0];
+    console.log("pc received remote stream");
+  }
+}
+
+function sendData(data) {
+  socket.send(JSON.stringify(data));
+}
+
+function addPendingCandidates(sid) {
+  if (sid in pendingCandidates) {
+    pendingCandidates[sid].forEach((candidate) => {
+      peers.get(sid).addIceCandidate(new RTCIceCandidate(candidate));
+    });
+  }
 }

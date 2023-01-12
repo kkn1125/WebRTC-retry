@@ -3,6 +3,8 @@
 const uWS = require("uWebSockets.js");
 const port = 3000;
 
+const users = new Map();
+let count = 1;
 const app = uWS
   .App()
   .ws("/*", {
@@ -59,11 +61,28 @@ const app = uWS
       });
     },
     open: (ws) => {
+      ws.subscribe("broadcast");
       console.log("A WebSocket connected with URL: " + ws.url);
+      users.set(ws, count);
+      ws.send(JSON.stringify({ type: "ready", sid: count }));
+      if (!users.has(ws)) {
+        count++;
+      }
     },
     message: (ws, message, isBinary) => {
       /* Ok is false if backpressure was built up, wait for drain */
-      let ok = ws.send(message, isBinary);
+      const userCount = users.get(ws);
+      console.log(isBinary);
+      console.log(message);
+      const json = JSON.parse(new TextDecoder().decode(message));
+      if (json.type === "offer") {
+        console.log(json);
+      }
+      let ok = ws.publish(
+        "broadcast",
+        JSON.stringify(Object.assign(json, { sid: userCount })),
+        isBinary
+      );
     },
     drain: (ws) => {
       console.log("WebSocket backpressure: " + ws.getBufferedAmount());
